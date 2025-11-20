@@ -18,11 +18,11 @@ from langchain_groq import ChatGroq
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.prompts import PromptTemplate
-from langchain.chains import LLMChain
+from langchain_community.chains import LLMChain
 from langchain.schema import Document
 from langchain_community.embeddings import HuggingFaceBgeEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain.chains import RetrievalQA
+from langchain_community.chains import RetrievalQA
 
 # Configure logging
 logger = get_logger(__name__)
