@@ -5,24 +5,25 @@ import logging
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 import csv
+import re
+import math
 
 import streamlit as st
 from streamlit.logger import get_logger
 import pandas as pd
 from dotenv import load_dotenv, find_dotenv
-os.environ['REPORTLAB_TTF_CACHE'] = '/tmp'  
+os.environ['REPORTLAB_TTF_CACHE'] = '/tmp'
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfbase import pdfmetrics
-# LangChain imports
+
+# ---> LangChain / Groq / community imports  <---
 from langchain_groq import ChatGroq
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.prompts import PromptTemplate
-from langchain.chains import LLMChain
 from langchain.schema import Document
 from langchain_community.embeddings import HuggingFaceBgeEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain.chains import RetrievalQA
 
 # Configure logging
 logger = get_logger(__name__)
@@ -31,9 +32,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
-# ============================================================================
 # CONFIGURATION & CONSTANTS
-# ============================================================================
 
 # Load environment variables
 load_dotenv(find_dotenv())
@@ -60,14 +59,12 @@ ANSWER_TEMPERATURE = 0.3
 # Streamlit page configuration
 st.set_page_config(
     page_title="Q&A Generator",
-    page_icon="ðŸ“„",
+    page_icon="📖",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ============================================================================
 # CUSTOM STYLING
-# ============================================================================
 
 custom_css = """
 <style>
@@ -107,9 +104,7 @@ custom_css = """
 
 st.markdown(custom_css, unsafe_allow_html=True)
 
-# ============================================================================
 # SESSION STATE INITIALIZATION
-# ============================================================================
 
 def initialize_session_state():
     """Initialize all session state variables."""
@@ -136,9 +131,7 @@ def initialize_session_state():
 
 initialize_session_state()
 
-# ============================================================================
 # UTILITY FUNCTIONS
-# ============================================================================
 
 def load_and_validate_pdf(uploaded_file) -> Tuple[bool, Optional[str], Optional[str]]:
     """
@@ -167,7 +160,10 @@ def load_and_validate_pdf(uploaded_file) -> Tuple[bool, Optional[str], Optional[
         content = "\n\n".join([page.page_content for page in pages])
 
         # Clean up
-        os.unlink(tmp_path)
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
 
         return True, content, None
 
@@ -176,18 +172,10 @@ def load_and_validate_pdf(uploaded_file) -> Tuple[bool, Optional[str], Optional[
         return False, None, f"Error loading PDF: {str(e)}"
 
 
-def split_text_into_chunks(text: str, chunk_size: int = CHUNK_SIZE, 
+def split_text_into_chunks(text: str, chunk_size: int = CHUNK_SIZE,
                            chunk_overlap: int = CHUNK_OVERLAP) -> List[str]:
     """
     Split text into chunks using RecursiveCharacterTextSplitter.
-
-    Args:
-        text: Input text to split
-        chunk_size: Size of each chunk
-        chunk_overlap: Overlap between chunks
-
-    Returns:
-        List of text chunks
     """
     try:
         splitter = RecursiveCharacterTextSplitter(
@@ -216,12 +204,6 @@ def initialize_embeddings():
 def create_vector_store(chunks: List[str]) -> Optional[FAISS]:
     """
     Create FAISS vector store from text chunks.
-
-    Args:
-        chunks: List of text chunks
-
-    Returns:
-        FAISS vector store or None if error
     """
     try:
         documents = [Document(page_content=chunk) for chunk in chunks]
@@ -233,107 +215,35 @@ def create_vector_store(chunks: List[str]) -> Optional[FAISS]:
         return None
 
 
-def generate_questions(text: str, num_questions: int = 10) -> Tuple[bool, Optional[List[str]], Optional[str]]:
-    """
-    Generate questions from text using LLM.
-
-    Args:
-        text: Input text
-        num_questions: Number of questions to generate
-
-    Returns:
-        Tuple of (success, questions_list, error_message)
-    """
-    try:
-        # Initialize LLM
-        question_llm = ChatGroq(
-            model=QUESTION_GENERATION_MODEL,
-            temperature=QUESTION_TEMPERATURE,
-            api_key=GROQ_API_KEY
-        )
-
-        # Create prompt template
-        prompt_template = f"""You are an expert at extracting the MOST IMPORTANT questions from any text.
-
-Your task:
-- Generate ONLY the Top {num_questions} most important questions.
-- No MCQs, no True/False, no short/long labels.
-- Just write the {num_questions} most important and meaningful questions.
-- Questions must fully cover the key ideas in the text.
-- Do NOT include answers.
-- Number the questions (1., 2., 3., etc.)
-
-Text to analyze:
-{{text}}
-
-Produce ONLY the Top {num_questions} important questions numbered:"""
-
-        question_prompt = PromptTemplate(
-            template=prompt_template,
-            input_variables=['text']
-        )
-
-        # Create chain
-        question_chain = LLMChain(llm=question_llm, prompt=question_prompt)
-
-        # Generate questions
-        result = question_chain.run(text=text)
-        
-        # Extract questions from result
-        questions_list = extract_questions_as_list(result)
-
-        return True, questions_list, None
-
-    except Exception as e:
-        logger.error(f"Question generation error: {str(e)}")
-        return False, None, f"Error generating questions: {str(e)}"
-
-
-# ---------- REPLACEMENT: generate_questions + helpers + fallback ----------
-import re
+# ---------- QUESTION EXTRACTION HELPERS & FALLBACKS ----------
 from sklearn.feature_extraction.text import TfidfVectorizer
-from nltk.tokenize import sent_tokenize  # you may need to `pip install nltk` and download punkt
-import math
+from nltk.tokenize import sent_tokenize  # may require nltk data install
+
 
 def extract_questions_as_list(questions_text: str, desired_n: int = 10) -> List[str]:
-    """
-    Robustly extract individual questions from raw LLM text.
-    Handles:
-     - Numbered lines: "1. What is...?"
-     - Bulleted lines: "- What is...?" or "* What...?"
-     - Plain sentences where each sentence is a question.
-    Returns up to desired_n questions.
-    """
     if not questions_text:
         return []
 
-    # Normalize whitespace
     text = questions_text.strip()
-    # Replace common bullet characters with newline
     text = re.sub(r'^\s*[-*•]\s+', '', text, flags=re.MULTILINE)
-    # Split using newlines first
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     questions = []
 
     for line in lines:
-        # If it starts with a number like "1." or "1)", remove numbering
         m = re.match(r'^\s*\d+[\.\)]\s*(.*)', line)
         if m:
             candidate = m.group(1).strip()
         else:
             candidate = line
 
-        # If the line contains multiple questions separated by "?" keep each
         parts = re.split(r'\?\s*', candidate)
         for p in parts:
             p = p.strip()
             if not p:
                 continue
-            # restore question mark if missing
             if not p.endswith('?'):
                 p = p + '?'
-            # heuristics: length and must contain at least a verb/noun (rough check)
-            if len(p) > 20:  # avoid tiny fragments
+            if len(p) > 20:
                 questions.append(p)
             elif len(questions) < desired_n and len(p) > 10:
                 questions.append(p)
@@ -341,7 +251,6 @@ def extract_questions_as_list(questions_text: str, desired_n: int = 10) -> List[
         if len(questions) >= desired_n:
             break
 
-    # Last resort: if still empty, try splitting into sentences and taking those ending with '?'
     if not questions:
         sents = re.split(r'(?<=[\.\?\!])\s+', text)
         for s in sents:
@@ -355,40 +264,30 @@ def extract_questions_as_list(questions_text: str, desired_n: int = 10) -> List[
 
 
 def fallback_generate_questions_tfidf(text: str, num_questions: int = 10) -> List[str]:
-    """
-    Deterministic fallback: score sentences by TF-IDF and pick top N sentences that look like questions.
-    If not enough question-like sentences, convert top informative sentences into question form using heuristics.
-    """
     try:
-        # Sentence split (nltk punkt required). If not available, naive split:
         try:
             sents = sent_tokenize(text)
         except Exception:
             sents = re.split(r'(?<=[\.\?\!])\s+', text)
 
-        # Filter out very short sentences
         sents = [s.strip() for s in sents if len(s.strip()) > 30]
 
         if not sents:
             return []
 
-        # Compute TF-IDF sentence scores by treating sentences as documents
         vectorizer = TfidfVectorizer(max_features=2000, stop_words='english', ngram_range=(1,2))
         X = vectorizer.fit_transform(sents)
-        scores = X.sum(axis=1).A1  # sum TF-IDF weights per sentence
+        scores = X.sum(axis=1).A1
         ranked_idx = list(reversed(sorted(range(len(scores)), key=lambda i: scores[i])))
 
         questions = []
         for idx in ranked_idx:
             sent = sents[idx]
-            # If sentence already is a question, keep it
             if sent.endswith('?'):
                 q = sent
             else:
-                # Try a simple conversion: if sentence has "is/are/was/were/can/will/should/must/could"
                 m = re.search(r'\b(is|are|was|were|can|will|should|must|could|do|does|did|has|have|had|may)\b', sent, flags=re.I)
                 if m:
-                    # naive inversion: put the modal/auxiliary at front
                     aux = m.group(1)
                     before = sent[:m.start()].strip()
                     after = sent[m.end():].strip()
@@ -396,19 +295,16 @@ def fallback_generate_questions_tfidf(text: str, num_questions: int = 10) -> Lis
                     if not q.endswith('?'):
                         q = q + '?'
                 else:
-                    # fallback: make "What is ..." or "How does ..." prefixes intelligently using length
                     if len(sent.split()) < 12:
                         q = f"What is {sent.strip().rstrip('.')}?"
                     else:
                         q = f"How does {sent.strip().rstrip('.')}?"
-            # Basic cleanup
             q = re.sub(r'\s+', ' ', q).strip()
             if len(q) > 20:
                 questions.append(q)
             if len(questions) >= num_questions:
                 break
 
-        # If still short, pad by slicing other top sentences converted similarly
         if len(questions) < num_questions:
             for idx in ranked_idx:
                 if idx >= len(sents):
@@ -433,8 +329,7 @@ def generate_questions(text: str, num_questions: int = 10) -> Tuple[bool, Option
     Returns (success, questions_list, error_message)
     """
     try:
-        # Strong, unambiguous prompt. Explicitly forbid clarifying questions or meta responses.
-        strict_prompt = (
+        strict_prompt_template = (
             "SYSTEM: You are an expert question extractor. You MUST produce exactly the top "
             f"{num_questions} MOST IMPORTANT questions about the provided text. DO NOT ask "
             "any clarifying questions, do NOT return answers or commentary, and do NOT return "
@@ -445,56 +340,43 @@ def generate_questions(text: str, num_questions: int = 10) -> Tuple[bool, Option
             "TEXT:\n{text}\n\nProduce ONLY the numbered questions.\n"
         )
 
-        # Initialize LLM once
+        # Initialize LLM
         question_llm = ChatGroq(
             model=QUESTION_GENERATION_MODEL,
             temperature=QUESTION_TEMPERATURE,
-            api_key=GROQ_API_KEY,
-            # If ChatGroq supports max_tokens / stop keywords pass them - safe to include if supported
-            # max_tokens=512,
+            api_key=GROQ_API_KEY
         )
 
-        # Use a direct run with the strict prompt
-        prompt_template = PromptTemplate(
-            template=strict_prompt,
-            input_variables=['text']
-        )
+        # Build prompt string and invoke LLM directly
+        prompt_str = strict_prompt_template.format(text=text)
+        result = question_llm.invoke(prompt_str)
 
-        question_chain = LLMChain(llm=question_llm, prompt=prompt_template)
+        # result may be an object with .content or a string
+        raw_out = getattr(result, 'content', result)
+        questions_list = extract_questions_as_list(raw_out, desired_n=num_questions)
 
-        # 1) Primary attempt
-        result = question_chain.run(text=text)
-
-        # 2) Validate result
-        questions_list = extract_questions_as_list(result, desired_n=num_questions)
-
-        # If the result contains assistant-y text or not enough questions, retry once with even more explicit instruction
-        if (not questions_list) or len(questions_list) < max(3, math.ceil(0.6 * num_questions)) or re.search(r"haven'?t asked|please go ahead|can't|cannot|ask me", (result or ""), flags=re.I):
+        # Retry if insufficient
+        if (not questions_list) or len(questions_list) < max(3, math.ceil(0.6 * num_questions)) or re.search(r"haven'?t asked|please go ahead|can't|cannot|ask me", (raw_out or ""), flags=re.I):
             logger.info("LLM output invalid or insufficient; retrying with stricter instruction.")
-            retry_prompt = strict_prompt + (
-                "\nRETRY: You failed to produce the required output. This is a strict retry: produce ONLY the numbered questions, nothing else.\n"
-            )
-            retry_template = PromptTemplate(template=retry_prompt, input_variables=['text'])
-            retry_chain = LLMChain(llm=question_llm, prompt=retry_template)
-            result_retry = retry_chain.run(text=text)
-            questions_list = extract_questions_as_list(result_retry, desired_n=num_questions)
+            retry_prompt = strict_prompt_template + "\nRETRY: You failed to produce the required output. This is a strict retry: produce ONLY the numbered questions, nothing else.\n"
+            prompt_retry = retry_prompt.format(text=text)
+            result_retry = question_llm.invoke(prompt_retry)
+            raw_retry = getattr(result_retry, 'content', result_retry)
+            questions_list = extract_questions_as_list(raw_retry, desired_n=num_questions)
 
-        # If still invalid, use deterministic fallback TF-IDF
+        # If still invalid, fallback to deterministic TF-IDF
         if not questions_list or len(questions_list) < 2:
             logger.info("Using deterministic TF-IDF fallback to generate questions.")
             questions_list = fallback_generate_questions_tfidf(text, num_questions)
 
-        # Final guard: ensure we have up to num_questions entries
         if not questions_list:
             return False, None, "Unable to generate questions (LLM failed and fallback returned nothing)."
 
-        # Trim/pad to exact num_questions
         questions_list = questions_list[:num_questions]
         return True, questions_list, None
 
     except Exception as e:
         logger.error(f"Question generation error: {str(e)}")
-        # fallback attempt
         try:
             questions_list = fallback_generate_questions_tfidf(text, num_questions)
             if questions_list:
@@ -502,23 +384,22 @@ def generate_questions(text: str, num_questions: int = 10) -> Tuple[bool, Option
         except Exception:
             pass
         return False, None, f"Error generating questions: {str(e)}"
+
+
 def clean_answer_text(text: str) -> str:
-    import re
     if not text:
         return ""
 
     # Fix decimals like "1 . 25" -> "1.25"
     text = re.sub(r"(\d)\s*\.\s*(\d)", r"\1.\2", text)
 
-    # Collapse multiple spaces (but keep single spaces)
+    # Collapse multiple spaces
     text = re.sub(r"[ \t]{2,}", " ", text)
 
     # Normalize multiple blank lines
     text = re.sub(r"\n{3,}", "\n\n", text)
 
     return text.strip()
-
-
 
 
 def generate_answer(question: str, retriever) -> Optional[str]:
@@ -551,7 +432,6 @@ QUESTION:
 Write the answer now in the described structure.
 """
 
-
     try:
         # Retrieve relevant docs
         docs = retriever.get_relevant_documents(question)
@@ -565,7 +445,8 @@ Write the answer now in the described structure.
 
         final_prompt = TEMPLATE.format(context=context, question=question)
         result = llm.invoke(final_prompt)
-        answer = clean_answer_text(result.content)
+        raw = getattr(result, 'content', result)
+        answer = clean_answer_text(raw)
 
         # Clean symbols
         answer = re.sub(r"[#*•▪►`_]+", " ", answer)
@@ -579,17 +460,8 @@ Write the answer now in the described structure.
         logger.error(f"Answer generation error: {str(e)}")
         return f"Error generating answer: {str(e)}"
 
+
 def generate_qa_pairs(questions: List[str], vector_store) -> List[Dict[str, str]]:
-    """
-    Generate Q&A pairs for all questions.
-
-    Args:
-        questions: List of questions
-        vector_store: FAISS vector store
-
-    Returns:
-        List of Q&A dictionaries
-    """
     qa_pairs = []
     retriever = vector_store.as_retriever()
 
@@ -605,7 +477,6 @@ def generate_qa_pairs(questions: List[str], vector_store) -> List[Dict[str, str]
 
 
 def create_csv_export(qa_pairs: List[Dict[str, str]]) -> bytes:
-    """Create CSV export from Q&A pairs."""
     output = io.StringIO()
     if qa_pairs:
         fieldnames = ['Question_No', 'Question', 'Answer']
@@ -617,7 +488,6 @@ def create_csv_export(qa_pairs: List[Dict[str, str]]) -> bytes:
 
 
 def create_txt_export(qa_pairs: List[Dict[str, str]]) -> bytes:
-    """Create TXT export from Q&A pairs."""
     output = []
     output.append("=" * 80)
     output.append("Q&A GENERATOR - EXPORT RESULTS")
@@ -638,7 +508,7 @@ def create_txt_export(qa_pairs: List[Dict[str, str]]) -> bytes:
 def create_pdf_export(qa_pairs):
     try:
         from reportlab.platypus import (
-            SimpleDocTemplate, Paragraph, Spacer, PageBreak, 
+            SimpleDocTemplate, Paragraph, Spacer, PageBreak,
             ListFlowable, ListItem
         )
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -665,14 +535,14 @@ def create_pdf_export(qa_pairs):
 
         def draw_page(canvas, doc):
             canvas.saveState()
-            
+
             # BORDER aligned perfectly with margins
             canvas.setStrokeColor(colors.HexColor("#0077cc"))
             canvas.setLineWidth(1.5)
             canvas.rect(
-                LEFT, 
-                BOTTOM, 
-                letter[0] - LEFT - RIGHT, 
+                LEFT,
+                BOTTOM,
+                letter[0] - LEFT - RIGHT,
                 letter[1] - TOP - BOTTOM
             )
 
@@ -700,6 +570,7 @@ def create_pdf_export(qa_pairs):
             textColor=colors.HexColor("#004d99"),
             spaceAfter=25
         )
+
         goal_style = ParagraphStyle(
             "GoalStyle",
             fontName="Helvetica-Bold",
@@ -719,7 +590,6 @@ def create_pdf_export(qa_pairs):
             spaceAfter=2,
             textColor=colors.HexColor("#222222"),
         )
-
 
         # Question style
         question_style = ParagraphStyle(
@@ -743,54 +613,20 @@ def create_pdf_export(qa_pairs):
             spaceAfter=10,
         )
 
-        # List item style
-        list_item_style = ParagraphStyle(
-            "ListItem",
-            parent=styles["BodyText"],
-            fontName="Helvetica",
-            fontSize=11,
-            leading=16,
-            leftIndent=0,
-            spaceAfter=8,
-        )
-
-        # Subpoint style
-        subpoint_style = ParagraphStyle(
-            "Subpoint",
-            parent=styles["BodyText"],
-            fontName="Helvetica",
-            fontSize=10.5,
-            leading=15,
-            leftIndent=20,
-            spaceAfter=6,
-        )
-
         elements = []
 
-        # COVER PAGE
-        #elements.append(Spacer(1, 1 * inch))
-        #elements.append(Paragraph("PDF Question & Answer Report", title_style))
-        #elements.append(Paragraph(
-           # f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-           # styles["Normal"]
-        #))
-        #elements.append(PageBreak())
-
-        # Q&A CONTENT
         for i, qa in enumerate(qa_pairs, 1):
             question = qa["Question"]
             answer = qa["Answer"]
 
-            # Add question
             elements.append(Paragraph(f"Q{i}: {question}", question_style))
 
-            # Parse and format answer
             parsed_elements = parse_answer_to_elements(
-                answer, 
-                answer_para_style, 
+                answer,
+                answer_para_style,
                 bullet_style
             )
-            
+
             elements.extend(parsed_elements)
             elements.append(Spacer(1, 0.15 * inch))
 
@@ -804,10 +640,8 @@ def create_pdf_export(qa_pairs):
 
 def parse_answer_to_elements(answer_text, para_style, bullet_style):
     from reportlab.platypus import Paragraph, ListFlowable, ListItem
-    import re
 
     elements = []
-    current_paragraph = []
     bullet_items = []
 
     lines = answer_text.strip().split('\n')
@@ -816,27 +650,17 @@ def parse_answer_to_elements(answer_text, para_style, bullet_style):
         if not line:
             continue
 
-        # Remove leading numbers (e.g., "1 ...", "2 ...")
+        # Remove leading numbers/labels
         line_no_num = re.sub(r'^\d+\s*\.?\s*', '', line)
-
-        # Optional: Remove letter labels too, e.g. "a.", "b."
         line_no_label = re.sub(r'^[a-zA-Z]\.\s*', '', line_no_num)
 
         bullet_items.append(ListItem(Paragraph(line_no_label, bullet_style)))
 
-    # Optionally: handle paragraphs before bullet points (e.g. intro text)
-    if current_paragraph:
-        elements.append(Paragraph(' '.join(current_paragraph), para_style))
-
     if bullet_items:
-        elements.append(ListFlowable(bullet_items, bulletType='bullet', leftIndent=5,bulletIndent=0 ))
+        elements.append(ListFlowable(bullet_items, bulletType='bullet', leftIndent=5, bulletIndent=0))
 
     return elements
 
-
-# ============================================================================
-# MAIN APP UI
-# ============================================================================
 
 def render_header():
     col1, col2 = st.columns([0.85, 0.15])
@@ -847,7 +671,7 @@ def render_header():
             <div style='text-align: center; padding-top: 10px; padding-bottom: 10px;'>
                 <h1 style='font-size: 55px; margin-bottom: 0;'>Q&A Generator</h1>
                 <p style='font-size: 25px; margin-top: 5px;'>
-                    Generate intelligent questions and answers from your PDF documents using AI
+                    Generate intelligent questions and answers from your PDF Documents using AI
                 </p>
             </div>
             """,
@@ -873,6 +697,7 @@ def render_header():
                 """,
                 unsafe_allow_html=True
             )
+
 
 def render_sidebar():
     """Render sidebar configuration."""
@@ -1074,7 +899,7 @@ def render_export_section():
                 data=pdf_data,
                 file_name=f"qa_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
                 mime="application/pdf",
-                use_container_width='strech'
+                use_container_width=True
             )
         else:
             st.warning("PDF export not available (reportlab not installed)")
@@ -1082,7 +907,6 @@ def render_export_section():
 
 def main():
     """Main application function."""
-    # Render components
     render_header()
     num_questions = render_sidebar()
 
@@ -1091,7 +915,6 @@ def main():
     render_results_section()
     render_export_section()
 
-    # Footer
     st.markdown("---")
     st.markdown(
         """
@@ -1108,4 +931,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
