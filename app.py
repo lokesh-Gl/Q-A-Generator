@@ -7,7 +7,7 @@ from typing import List, Dict, Optional, Tuple
 import csv
 import re
 import math
-
+from pypdf import PdfReader
 import streamlit as st
 from streamlit.logger import get_logger
 import pandas as pd
