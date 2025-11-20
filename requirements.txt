@@ -19,3 +19,4 @@ aiohttp==3.9.5
 tqdm==4.66.4
 PyYAML==6.0.3
 requests==2.32.5
+pypdf==5.0.1
