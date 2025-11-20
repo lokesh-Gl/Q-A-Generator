@@ -1,0 +1,13 @@
+langchain
+python-dotenv
+langchain-groq
+langchain-community
+unstructured
+pypdf
+langchain-chroma
+langchainhub
+streamlit
+reportlab
+sentence-transformers
+faiss-cpu
+nltk
