@@ -1,30 +1,3 @@
-# Interview Question Answer Preparation Project
-
-## How to run ?
-
-1. Create a Environment
-
-``` bash
-
-conda create -n question python==3.10 -y
-
-```
-2. Activate the Environment
-``` bash
-
-conda activate question
-
-```
-
-3.Install the Requirements
-
-``` bash
-
-pip install -r requirements.txt
-
-```
-
-
 📖 AI-Powered PDF Q&A Generator
 
 An end-to-end AI-driven Question & Answer Generator that extracts key knowledge from PDF documents and automatically generates important questions with well-structured answers. Built using Streamlit, LangChain, Groq LLMs, FAISS, and HuggingFace embeddings, this project is designed for students, educators, researchers, and professionals who want instant insights from large PDF files.
@@ -178,13 +151,6 @@ streamlit run app.py
 
 ⸻
 
-👨‍💻 Author
-
-Lokesh
-AI / ML | Deep Learning | App Developer
-
-⸻
-
 ⭐ Acknowledgements
 	•	LangChain
 	•	Groq
@@ -192,11 +158,3 @@ AI / ML | Deep Learning | App Developer
 	•	Streamlit
 
 ⸻
-
-📜 License
-
-This project is licensed under the MIT License.
-
-⸻
-
-Transform PDFs into structured knowledge with AI. 🚀
