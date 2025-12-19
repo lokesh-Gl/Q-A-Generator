@@ -148,7 +148,6 @@ streamlit run app.py
 	•	🧾 DOCX export
 	•	☁️ Cloud deployment (AWS / GCP)
 	•	👤 User authentication & history
-
 ⸻
 
 ⭐ Acknowledgements
