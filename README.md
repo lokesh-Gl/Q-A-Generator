@@ -141,7 +141,6 @@ streamlit run app.py
 	•	Production-ready export pipeline
 
 ⸻
-
 📈 Future Enhancements
 	•	🔎 Page-level answer citations
 	•	🌐 Multilingual support
